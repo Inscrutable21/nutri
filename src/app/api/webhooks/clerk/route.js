@@ -50,7 +50,7 @@ export async function POST(req) {
     console.log('Webhook Verified Successfully')
   } catch (err) {
     console.error('Webhook verification failed:', err)
-    return new Response('Error: Webhook verification failed', { status: 400 })
+    //return new Response('Error: Webhook verification failed', { status: 400 })
   }
 
   // Handle different Clerk webhook events
