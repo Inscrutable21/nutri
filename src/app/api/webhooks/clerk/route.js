@@ -2,8 +2,18 @@ import { Webhook } from 'svix'
 import { headers } from 'next/headers'
 import { prisma } from '@/lib/prisma'
 import { clerkClient } from '@clerk/nextjs/server'
+import { NextResponse } from 'next/server'
 
-export async function POST(req) {
+// Define the structure of Clerk webhook events
+interface ClerkWebhookEvent {
+  type: string;
+  data: {
+    id: string;
+    [key: string]: any;
+  };
+}
+
+export async function POST(req: Request) {
   // Verify the webhook is coming from Clerk
   const headerPayload = headers()
   const svixId = headerPayload.get('svix-id')
@@ -12,26 +22,44 @@ export async function POST(req) {
 
   // If headers are missing, return an error
   if (!svixId || !svixTimestamp || !svixSignature) {
-    return new Response('Error: Missing Svix headers', { status: 400 })
+    console.error('Missing Svix headers', {
+      svixId: !!svixId,
+      svixTimestamp: !!svixTimestamp,
+      svixSignature: !!svixSignature
+    })
+    return new NextResponse('Error: Missing Svix headers', { status: 400 })
+  }
+
+  // Validate webhook secret is set
+  const webhookSecret = process.env.WEBHOOK_SECRET
+  if (!webhookSecret) {
+    console.error('WEBHOOK_SECRET is not set in environment variables')
+    return new NextResponse('Error: Webhook secret not configured', { status: 500 })
   }
 
   // Get the raw body
   const payload = await req.text()
 
   // Create a new Svix Webhook instance with your webhook secret
-  const webhook = new Webhook(process.env.WEBHOOK_SECRET)
+  let webhook: Webhook
+  try {
+    webhook = new Webhook(webhookSecret)
+  } catch (err) {
+    console.error('Failed to initialize Svix Webhook', err)
+    return new NextResponse('Error: Failed to initialize webhook', { status: 500 })
+  }
 
-  let event
+  let event: ClerkWebhookEvent
   try {
     // Verify the webhook
     event = webhook.verify(payload, {
       'svix-id': svixId,
       'svix-timestamp': svixTimestamp,
       'svix-signature': svixSignature
-    })
+    }) as ClerkWebhookEvent
   } catch (err) {
     console.error('Webhook verification failed:', err)
-    return new Response('Error: Webhook verification failed', { status: 400 })
+    return new NextResponse('Error: Webhook verification failed', { status: 400 })
   }
 
   // Handle different Clerk webhook events
@@ -51,22 +79,43 @@ export async function POST(req) {
       
       default:
         console.log('Unhandled event type:', eventType)
+        return new NextResponse(`Unhandled event type: ${eventType}`, { status: 200 })
     }
 
-    return new Response('Webhook processed successfully', { status: 200 })
+    return new NextResponse('Webhook processed successfully', { status: 200 })
   } catch (error) {
     console.error('Webhook processing error:', error)
-    return new Response('Error processing webhook', { status: 500 })
+    return new NextResponse('Error processing webhook', { status: 500 })
   }
 }
 
-// Function to sync Clerk user to Prisma
-async function syncUserToPrisma(clerkUserId) {
-  try {
-    // Fetch user from Clerk
-    const clerkUser = await clerkClient.users.getUser(clerkUserId)
+// Function to sync Clerk user to Prisma with comprehensive error handling
+async function syncUserToPrisma(clerkUserId: string) {
+  if (!clerkUserId) {
+    console.warn('Attempted to sync user with no Clerk User ID')
+    return
+  }
 
-    // Prepare user data
+  try {
+    // Fetch user from Clerk with comprehensive error handling
+    let clerkUser
+    try {
+      clerkUser = await clerkClient.users.getUser(clerkUserId)
+    } catch (clerkFetchError) {
+      console.error('Failed to fetch Clerk user details', {
+        clerkUserId,
+        error: clerkFetchError instanceof Error ? clerkFetchError.message : 'Unknown error'
+      })
+      return
+    }
+
+    // Validate Clerk user
+    if (!clerkUser) {
+      console.warn(`No Clerk user found for ID: ${clerkUserId}`)
+      return
+    }
+
+    // Prepare user data with defensive programming
     const userData = {
       clerkUserId: clerkUser.id,
       email: clerkUser.emailAddresses[0]?.emailAddress || '',
@@ -74,7 +123,17 @@ async function syncUserToPrisma(clerkUserId) {
       lastName: clerkUser.lastName || '',
       profilePicture: clerkUser.imageUrl || '',
       
-      // Optional: Add address if available
+      // Safely extract additional metadata
+      metadata: {
+        phoneNumbers: clerkUser.phoneNumbers?.map(phone => phone.phoneNumber) || [],
+        primaryWeb3Wallet: clerkUser.web3Wallets?.[0]?.web3Wallet || null,
+        verifiedExternalAccounts: clerkUser.externalAccounts?.map(account => ({
+          provider: account.provider,
+          identifier: account.identification?.[0]?.identifier
+        })) || []
+      },
+
+      // Optional: Safely extract address details
       ...(clerkUser.primaryAddress && {
         address: {
           street: clerkUser.primaryAddress.street || '',
@@ -82,14 +141,15 @@ async function syncUserToPrisma(clerkUserId) {
           state: clerkUser.primaryAddress.state || '',
           country: clerkUser.primaryAddress.country || '',
           zipCode: clerkUser.primaryAddress.postalCode || '',
-          pinCode: clerkUser.primaryAddress.postalCode || ''
         }
       })
     }
 
-    // Upsert user in Prisma database
-    await prisma.user.upsert({
-      where: { clerkUserId: clerkUserId },
+    // Comprehensive upsert with detailed logging
+    const upsertResult = await prisma.user.upsert({
+      where: { 
+        clerkUserId: clerkUserId 
+      },
       update: {
         ...userData,
         // Prevent overwriting with empty values
@@ -98,26 +158,56 @@ async function syncUserToPrisma(clerkUserId) {
         lastName: userData.lastName || undefined,
         profilePicture: userData.profilePicture || undefined,
       },
-      create: userData
+      create: userData,
+      select: {
+        id: true,
+        clerkUserId: true,
+        email: true
+      }
     })
 
-    console.log(`User ${clerkUserId} synced successfully`)
+    console.log('User Sync Completed Successfully', {
+      clerkUserId: upsertResult.clerkUserId,
+      email: upsertResult.email,
+      internalId: upsertResult.id
+    })
+
+    return upsertResult
   } catch (error) {
-    console.error(`Error syncing user ${clerkUserId}:`, error)
-    throw error
+    console.error('Comprehensive User Sync Error', {
+      clerkUserId,
+      message: error instanceof Error ? error.message : 'Unknown error',
+      stack: error instanceof Error ? error.stack : 'No stack trace'
+    })
+    
+    return null
   }
 }
 
 // Function to delete user from Prisma when deleted in Clerk
-async function deleteUserFromPrisma(clerkUserId) {
+async function deleteUserFromPrisma(clerkUserId: string) {
+  if (!clerkUserId) {
+    console.warn('Attempted to delete user with no Clerk User ID')
+    return
+  }
+
   try {
-    await prisma.user.delete({
+    const deletedUser = await prisma.user.delete({
       where: { clerkUserId: clerkUserId }
     })
-    console.log(`User ${clerkUserId} deleted successfully`)
+
+    console.log(`User ${clerkUserId} deleted successfully`, {
+      deletedUserId: deletedUser.id
+    })
   } catch (error) {
     console.error(`Error deleting user ${clerkUserId}:`, error)
-    throw error
+    
+    // If user not found, it might have been already deleted
+    if (error instanceof Error && error.message.includes('RecordNotFound')) {
+      console.warn(`User ${clerkUserId} not found in database, likely already deleted`)
+    } else {
+      throw error
+    }
   }
 }
 
