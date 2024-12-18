@@ -4,16 +4,7 @@ import { prisma } from '@/lib/prisma'
 import { clerkClient } from '@clerk/nextjs/server'
 import { NextResponse } from 'next/server'
 
-// Define the structure of Clerk webhook events
-interface ClerkWebhookEvent {
-  type: string;
-  data: {
-    id: string;
-    [key: string]: any;
-  };
-}
-
-export async function POST(req: Request) {
+export async function POST(req) {
   // Verify the webhook is coming from Clerk
   const headerPayload = headers()
   const svixId = headerPayload.get('svix-id')
@@ -41,7 +32,7 @@ export async function POST(req: Request) {
   const payload = await req.text()
 
   // Create a new Svix Webhook instance with your webhook secret
-  let webhook: Webhook
+  let webhook
   try {
     webhook = new Webhook(webhookSecret)
   } catch (err) {
@@ -49,14 +40,14 @@ export async function POST(req: Request) {
     return new NextResponse('Error: Failed to initialize webhook', { status: 500 })
   }
 
-  let event: ClerkWebhookEvent
+  let event
   try {
     // Verify the webhook
     event = webhook.verify(payload, {
       'svix-id': svixId,
       'svix-timestamp': svixTimestamp,
       'svix-signature': svixSignature
-    }) as ClerkWebhookEvent
+    })
   } catch (err) {
     console.error('Webhook verification failed:', err)
     return new NextResponse('Error: Webhook verification failed', { status: 400 })
@@ -90,7 +81,7 @@ export async function POST(req: Request) {
 }
 
 // Function to sync Clerk user to Prisma with comprehensive error handling
-async function syncUserToPrisma(clerkUserId: string) {
+async function syncUserToPrisma(clerkUserId) {
   if (!clerkUserId) {
     console.warn('Attempted to sync user with no Clerk User ID')
     return
@@ -104,7 +95,7 @@ async function syncUserToPrisma(clerkUserId: string) {
     } catch (clerkFetchError) {
       console.error('Failed to fetch Clerk user details', {
         clerkUserId,
-        error: clerkFetchError instanceof Error ? clerkFetchError.message : 'Unknown error'
+        error: clerkFetchError.message || 'Unknown error'
       })
       return
     }
@@ -176,8 +167,8 @@ async function syncUserToPrisma(clerkUserId: string) {
   } catch (error) {
     console.error('Comprehensive User Sync Error', {
       clerkUserId,
-      message: error instanceof Error ? error.message : 'Unknown error',
-      stack: error instanceof Error ? error.stack : 'No stack trace'
+      message: error.message || 'Unknown error',
+      stack: error.stack || 'No stack trace'
     })
     
     return null
@@ -185,7 +176,7 @@ async function syncUserToPrisma(clerkUserId: string) {
 }
 
 // Function to delete user from Prisma when deleted in Clerk
-async function deleteUserFromPrisma(clerkUserId: string) {
+async function deleteUserFromPrisma(clerkUserId) {
   if (!clerkUserId) {
     console.warn('Attempted to delete user with no Clerk User ID')
     return
@@ -203,7 +194,7 @@ async function deleteUserFromPrisma(clerkUserId: string) {
     console.error(`Error deleting user ${clerkUserId}:`, error)
     
     // If user not found, it might have been already deleted
-    if (error instanceof Error && error.message.includes('RecordNotFound')) {
+    if (error.code === 'P2025') {
       console.warn(`User ${clerkUserId} not found in database, likely already deleted`)
     } else {
       throw error
