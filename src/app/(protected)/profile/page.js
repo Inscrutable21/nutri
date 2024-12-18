@@ -1,17 +1,18 @@
-'use client'
+'use client';
 
-import { useUser, SignOutButton } from '@clerk/nextjs'
-import { redirect } from 'next/navigation'
-import { useEffect } from 'react'
+import { useUser, SignOutButton } from '@clerk/nextjs';
+import { redirect } from 'next/navigation';
+import { useEffect } from 'react';
+import Image from 'next/image';
 
 export default function ProfilePage() {
-  const { isLoaded, isSignedIn, user } = useUser()
+  const { isLoaded, isSignedIn, user } = useUser();
 
   useEffect(() => {
     if (isLoaded && !isSignedIn) {
-      redirect('/sign-in')
+      redirect('/sign-in');
     }
-  }, [isLoaded, isSignedIn])
+  }, [isLoaded, isSignedIn]);
 
   // Handle loading state
   if (!isLoaded) {
@@ -21,12 +22,12 @@ export default function ProfilePage() {
           <span className="sr-only">Loading...</span>
         </div>
       </div>
-    )
+    );
   }
 
   // Additional safety check
   if (!user) {
-    return null
+    return null;
   }
 
   return (
@@ -34,13 +35,13 @@ export default function ProfilePage() {
       <h1 className="text-2xl font-bold mb-4">User Profile</h1>
       <div className="bg-white shadow-md rounded-lg p-6">
         <div className="flex items-center mb-6">
-          <img 
-            src={user.profileImageUrl || '/default-avatar.png'} 
-            alt="Profile" 
+          <Image
+            src={user.profileImageUrl || '/default-avatar.png'}
+            alt="Profile"
             className="w-20 h-20 rounded-full mr-4"
-            onError={(e) => {
-              e.target.src = '/default-avatar.png'
-            }}
+            width={80} // Set image width
+            height={80} // Set image height
+            unoptimized={user.profileImageUrl ? false : true} // Avoid optimization for default avatars
           />
           <div>
             <h2 className="text-xl font-semibold">
@@ -51,7 +52,7 @@ export default function ProfilePage() {
             </p>
           </div>
         </div>
-        
+
         {/* Sign Out Button */}
         <div className="mt-6">
           <SignOutButton redirectUrl="/sign-in">
@@ -62,5 +63,5 @@ export default function ProfilePage() {
         </div>
       </div>
     </div>
-  )
+  );
 }
