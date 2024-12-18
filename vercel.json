@@ -15,8 +15,5 @@
         "src": "/(.*)",
         "dest": "/"
       }
-    ],
-    "env": {
-      "NEXT_PUBLIC_SITE_URL": "https://nutri-six-sooty.vercel.app/"
-    }
+    ]
   }
