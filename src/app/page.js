@@ -1,6 +1,7 @@
 'use client'
 
 import Link from 'next/link'
+import Image from 'next/image'
 import { 
   ShoppingCart, 
   Rocket, 
@@ -37,7 +38,7 @@ export default function Home() {
     },
     {
       name: 'Michael Chen',
-      quote: 'Exceptional quality and lightning-fast shipping. Couldn\'t be happier!',
+      quote: 'Exceptional quality and lightning-fast shipping. Couldn&apos;t be happier!',
       rating: 5
     }
   ]
@@ -83,7 +84,7 @@ export default function Home() {
           <div className="text-center mb-16">
             <h2 className="text-4xl font-bold text-gray-800 mb-4">Why Choose Our Store</h2>
             <p className="text-xl text-gray-600 max-w-2xl mx-auto">
-              We're committed to providing an unparalleled shopping experience that exceeds your expectations.
+              We&apos;re committed to providing an unparalleled shopping experience that exceeds your expectations.
             </p>
           </div>
           <div className="grid md:grid-cols-3 gap-10">
@@ -129,9 +130,11 @@ export default function Home() {
                 className="bg-white rounded-2xl overflow-hidden shadow-lg hover:shadow-2xl transition-all group"
               >
                 <div className="relative overflow-hidden">
-                  <img 
+                  <Image 
                     src={`/api/placeholder/400/400?${product}`} 
                     alt={`Product ${product}`} 
+                    width={400}
+                    height={400}
                     className="w-full object-cover transform group-hover:scale-110 transition-transform duration-300"
                   />
                   <div className="absolute top-4 right-4 bg-white/80 px-3 py-1 rounded-full flex items-center">
@@ -175,7 +178,7 @@ export default function Home() {
                   ))}
                 </div>
                 <p className="text-xl text-gray-700 mb-6 italic">
-                  "{testimonial.quote}"
+                  &quot;{testimonial.quote}&quot;
                 </p>
                 <div className="flex items-center">
                   <div className="w-12 h-12 bg-indigo-100 rounded-full flex items-center justify-center mr-4">
