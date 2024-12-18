@@ -2,42 +2,41 @@ import { Webhook } from 'svix'
 import { headers } from 'next/headers'
 import { prisma } from '@/lib/prisma'
 import { clerkClient } from '@clerk/nextjs/server'
-import { NextResponse } from 'next/server'
 
 export async function POST(req) {
+  // Log the entire request for debugging
+  console.log('Webhook Received: Starting Processing')
+
   // Verify the webhook is coming from Clerk
   const headerPayload = headers()
   const svixId = headerPayload.get('svix-id')
   const svixTimestamp = headerPayload.get('svix-timestamp')
   const svixSignature = headerPayload.get('svix-signature')
 
+  // Log headers for debugging
+  console.log('Svix Headers:', {
+    svixId,
+    svixTimestamp,
+    svixSignature
+  })
+
   // If headers are missing, return an error
   if (!svixId || !svixTimestamp || !svixSignature) {
-    console.error('Missing Svix headers', {
-      svixId: !!svixId,
-      svixTimestamp: !!svixTimestamp,
-      svixSignature: !!svixSignature
-    })
-    return new NextResponse('Error: Missing Svix headers', { status: 400 })
-  }
-
-  // Validate webhook secret is set
-  const webhookSecret = process.env.WEBHOOK_SECRET
-  if (!webhookSecret) {
-    console.error('WEBHOOK_SECRET is not set in environment variables')
-    return new NextResponse('Error: Webhook secret not configured', { status: 500 })
+    console.error('Missing Svix headers')
+    return new Response('Error: Missing Svix headers', { status: 400 })
   }
 
   // Get the raw body
   const payload = await req.text()
+  console.log('Webhook Payload:', payload)
 
   // Create a new Svix Webhook instance with your webhook secret
-  let webhook
+  let webhook;
   try {
-    webhook = new Webhook(webhookSecret)
+    webhook = new Webhook(process.env.WEBHOOK_SECRET)
   } catch (err) {
-    console.error('Failed to initialize Svix Webhook', err)
-    return new NextResponse('Error: Failed to initialize webhook', { status: 500 })
+    console.error('Failed to create Svix Webhook instance:', err)
+    return new Response('Error: Failed to create webhook', { status: 500 })
   }
 
   let event
@@ -48,14 +47,20 @@ export async function POST(req) {
       'svix-timestamp': svixTimestamp,
       'svix-signature': svixSignature
     })
+    console.log('Webhook Verified Successfully')
   } catch (err) {
     console.error('Webhook verification failed:', err)
-    return new NextResponse('Error: Webhook verification failed', { status: 400 })
+    return new Response('Error: Webhook verification failed', { status: 400 })
   }
 
   // Handle different Clerk webhook events
   const eventType = event.type
   const clerkUserId = event.data.id
+
+  console.log('Webhook Event Details:', {
+    eventType,
+    clerkUserId
+  })
 
   try {
     switch (eventType) {
@@ -70,43 +75,55 @@ export async function POST(req) {
       
       default:
         console.log('Unhandled event type:', eventType)
-        return new NextResponse(`Unhandled event type: ${eventType}`, { status: 200 })
+        return new Response('Unhandled event type', { status: 200 })
     }
 
-    return new NextResponse('Webhook processed successfully', { status: 200 })
+    return new Response('Webhook processed successfully', { status: 200 })
   } catch (error) {
-    console.error('Webhook processing error:', error)
-    return new NextResponse('Error processing webhook', { status: 500 })
+    console.error('Comprehensive Webhook processing error:', {
+      message: error.message,
+      stack: error.stack,
+      eventType,
+      clerkUserId
+    })
+    return new Response('Error processing webhook', { status: 500 })
   }
 }
 
 // Function to sync Clerk user to Prisma with comprehensive error handling
 async function syncUserToPrisma(clerkUserId) {
+  console.log(`Starting sync for user: ${clerkUserId}`)
+  
   if (!clerkUserId) {
-    console.warn('Attempted to sync user with no Clerk User ID')
-    return
+    console.warn('No Clerk User ID provided for sync')
+    return null
   }
 
   try {
     // Fetch user from Clerk with comprehensive error handling
-    let clerkUser
+    let clerkUser;
     try {
       clerkUser = await clerkClient.users.getUser(clerkUserId)
-    } catch (clerkFetchError) {
-      console.error('Failed to fetch Clerk user details', {
-        clerkUserId,
-        error: clerkFetchError.message || 'Unknown error'
+      console.log('Clerk User Fetched:', {
+        id: clerkUser.id,
+        email: clerkUser.emailAddresses[0]?.emailAddress
       })
-      return
+    } catch (clerkFetchError) {
+      console.error('Failed to fetch Clerk user', {
+        clerkUserId,
+        errorMessage: clerkFetchError.message,
+        errorStack: clerkFetchError.stack
+      })
+      return null
     }
 
     // Validate Clerk user
     if (!clerkUser) {
       console.warn(`No Clerk user found for ID: ${clerkUserId}`)
-      return
+      return null
     }
 
-    // Prepare user data with defensive programming
+    // Comprehensive user data preparation
     const userData = {
       clerkUserId: clerkUser.id,
       email: clerkUser.emailAddresses[0]?.emailAddress || '',
@@ -114,7 +131,7 @@ async function syncUserToPrisma(clerkUserId) {
       lastName: clerkUser.lastName || '',
       profilePicture: clerkUser.imageUrl || '',
       
-      // Safely extract additional metadata
+      // Comprehensive metadata collection
       metadata: {
         phoneNumbers: clerkUser.phoneNumbers?.map(phone => phone.phoneNumber) || [],
         primaryWeb3Wallet: clerkUser.web3Wallets?.[0]?.web3Wallet || null,
@@ -124,7 +141,7 @@ async function syncUserToPrisma(clerkUserId) {
         })) || []
       },
 
-      // Optional: Safely extract address details
+      // Optional address details with fallback
       ...(clerkUser.primaryAddress && {
         address: {
           street: clerkUser.primaryAddress.street || '',
@@ -136,8 +153,8 @@ async function syncUserToPrisma(clerkUserId) {
       })
     }
 
-    // Comprehensive upsert with detailed logging
-    const upsertResult = await prisma.user.upsert({
+    // Upsert user in the database with comprehensive logging
+    const user = await prisma.user.upsert({
       where: { 
         clerkUserId: clerkUserId 
       },
@@ -153,22 +170,26 @@ async function syncUserToPrisma(clerkUserId) {
       select: {
         id: true,
         clerkUserId: true,
-        email: true
+        email: true,
+        firstName: true,
+        lastName: true,
+        profilePicture: true
       }
     })
 
     console.log('User Sync Completed Successfully', {
-      clerkUserId: upsertResult.clerkUserId,
-      email: upsertResult.email,
-      internalId: upsertResult.id
+      clerkUserId: user.clerkUserId,
+      email: user.email,
+      prismaUserId: user.id
     })
 
-    return upsertResult
+    return user
   } catch (error) {
     console.error('Comprehensive User Sync Error', {
       clerkUserId,
-      message: error.message || 'Unknown error',
-      stack: error.stack || 'No stack trace'
+      message: error.message,
+      name: error.name,
+      stack: error.stack
     })
     
     return null
@@ -177,28 +198,23 @@ async function syncUserToPrisma(clerkUserId) {
 
 // Function to delete user from Prisma when deleted in Clerk
 async function deleteUserFromPrisma(clerkUserId) {
-  if (!clerkUserId) {
-    console.warn('Attempted to delete user with no Clerk User ID')
-    return
-  }
-
+  console.log(`Attempting to delete user with Clerk ID: ${clerkUserId}`)
+  
   try {
     const deletedUser = await prisma.user.delete({
       where: { clerkUserId: clerkUserId }
     })
-
+    
     console.log(`User ${clerkUserId} deleted successfully`, {
-      deletedUserId: deletedUser.id
+      deletedUser
     })
   } catch (error) {
-    console.error(`Error deleting user ${clerkUserId}:`, error)
-    
-    // If user not found, it might have been already deleted
-    if (error.code === 'P2025') {
-      console.warn(`User ${clerkUserId} not found in database, likely already deleted`)
-    } else {
-      throw error
-    }
+    console.error(`Error deleting user ${clerkUserId}:`, {
+      message: error.message,
+      name: error.name,
+      stack: error.stack
+    })
+    throw error
   }
 }
 
