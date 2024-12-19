@@ -1,9 +1,11 @@
-// app/api/webhooks/clerk/route.js
+// src/app/api/webhooks/clerk/route.js
 import { Webhook } from 'svix'
 import { headers } from 'next/headers'
-import { userService } from '@/services/user.service'
+import { prisma } from '@/lib/prisma'
+import { clerkClient } from '@clerk/nextjs/server'
 
-export const runtime = 'edge'
+// Remove edge runtime as it's not compatible with current setup
+// export const runtime = 'edge'
 
 const WEBHOOK_SECRET = process.env.CLERK_WEBHOOK_SECRET
 
@@ -69,7 +71,53 @@ export async function POST(req) {
     switch (eventType) {
       case 'user.created':
       case 'user.updated': {
-        const user = await userService.syncClerkUserToDatabase(userId)
+        // Inline the sync logic to avoid edge runtime issues
+const clerkUser = await clerkClient.users.getUser(userId)
+if (!clerkUser) {
+  throw new Error(`No Clerk user found for ID: ${userId}`)
+}
+
+const primaryEmailObj = clerkUser.emailAddresses.find(
+  email => email.id === clerkUser.primaryEmailAddressId
+)
+
+if (!primaryEmailObj?.emailAddress) {
+  throw new Error('User must have a primary email address')
+}
+
+let addressData = null
+if (clerkUser.primaryAddress) {
+  addressData = {
+    street: clerkUser.primaryAddress.street1 || null,
+    city: clerkUser.primaryAddress.city || null,
+    state: clerkUser.primaryAddress.state || null,
+    country: clerkUser.primaryAddress.country || null,
+    zipCode: clerkUser.primaryAddress.postalCode || null,
+    pinCode: null
+  }
+}
+
+const userData = {
+  clerkUserId: clerkUser.id,
+  email: primaryEmailObj.emailAddress,
+  firstName: clerkUser.firstName || null,
+  lastName: clerkUser.lastName || null,
+  profilePicture: clerkUser.imageUrl || null,
+  address: addressData,
+  updatedAt: new Date()
+}
+
+const user = await prisma.user.upsert({
+  where: { clerkUserId: userId },
+  update: {
+    ...userData,
+    firstName: userData.firstName ?? undefined,
+    lastName: userData.lastName ?? undefined,
+    profilePicture: userData.profilePicture ?? undefined,
+    address: addressData ?? undefined
+  },
+  create: userData
+})
         return new Response(
           JSON.stringify({ 
             success: true,
