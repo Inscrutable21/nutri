@@ -1,6 +1,6 @@
 {
     "functions": {
-      "src/app/api/webhooks/clerk/route.js": {
+      "app/api/webhooks/clerk/route.js": {
         "memory": 1024,
         "maxDuration": 10
       }

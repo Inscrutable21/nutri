@@ -3,9 +3,8 @@ import { Webhook } from 'svix'
 import { headers } from 'next/headers'
 import { prisma } from '@/lib/prisma'
 import { clerkClient } from '@clerk/nextjs/server'
+import '../../../runtime'  // This will use the Node.js runtime
 
-// Use Node.js runtime instead of Edge
-export const runtime = 'nodejs'
 
 const WEBHOOK_SECRET = process.env.CLERK_WEBHOOK_SECRET
 
