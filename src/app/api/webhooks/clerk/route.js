@@ -1,224 +1,98 @@
-// app/api/webhook/clerk/route.js
+// app/api/webhooks/clerk/route.js
 import { Webhook } from 'svix'
 import { headers } from 'next/headers'
-import { prisma } from '@/lib/prisma'
-import { clerkClient } from '@clerk/nextjs/server'
+import { userService } from '@/services/user.service'
 
 export const runtime = 'edge'
 
+const WEBHOOK_SECRET = process.env.WEBHOOK_SECRET
+
 export async function POST(req) {
-  console.log('Webhook Received: Starting Processing')
-
-  const headersList = headers()
-  const svixId = headersList.get('svix-id')
-  const svixTimestamp = headersList.get('svix-timestamp')
-  const svixSignature = headersList.get('svix-signature')
-
-  console.log('Svix Headers:', {
-    svixId,
-    svixTimestamp,
-    svixSignature
-  })
-
-  if (!svixId || !svixTimestamp || !svixSignature) {
-    console.error('Missing Svix headers')
-    return Response.json(
-      { error: 'Missing Svix headers' },
-      { status: 400 }
-    )
-  }
-
-  const payload = await req.text()
-  console.log('Webhook Payload:', payload)
-
-  let event
-
   try {
-    const wh = new Webhook(process.env.WEBHOOK_SECRET || '')
-    event = wh.verify(payload, {
-      'svix-id': svixId,
-      'svix-timestamp': svixTimestamp,
-      'svix-signature': svixSignature
-    })
-    console.log('Webhook Verified Successfully')
-  } catch (err) {
-    console.error('Webhook verification failed:', err)
-    return Response.json(
-      { error: 'Webhook verification failed' },
-      { status: 400 }
-    )
-  }
+    // 1. Validate webhook headers
+    const headersList = headers()
+    const svix = {
+      id: headersList.get('svix-id'),
+      timestamp: headersList.get('svix-timestamp'),
+      signature: headersList.get('svix-signature')
+    }
 
-  const { id: clerkUserId } = event.data
-  const eventType = event.type
+    if (!svix.id || !svix.timestamp || !svix.signature) {
+      return new Response(
+        JSON.stringify({ error: 'Missing required Svix headers' }),
+        { status: 400 }
+      )
+    }
 
-  if (!eventType || !clerkUserId) {
-    return Response.json(
-      { error: 'Invalid event data' },
-      { status: 400 }
-    )
-  }
+    // 2. Get and verify webhook payload
+    const payload = await req.text()
+    let event
+    
+    try {
+      const wh = new Webhook(WEBHOOK_SECRET)
+      event = wh.verify(payload, {
+        'svix-id': svix.id,
+        'svix-timestamp': svix.timestamp,
+        'svix-signature': svix.signature
+      })
+    } catch (err) {
+      console.error('Webhook verification failed:', err)
+      return new Response(
+        JSON.stringify({ error: 'Invalid webhook signature' }),
+        { status: 401 }
+      )
+    }
 
-  console.log('Webhook Event Details:', {
-    eventType,
-    clerkUserId
-  })
+    // 3. Process the webhook event
+    const { id: clerkUserId } = event.data
+    const eventType = event.type
 
-  try {
+    if (!eventType || !clerkUserId) {
+      return new Response(
+        JSON.stringify({ error: 'Invalid event data' }),
+        { status: 400 }
+      )
+    }
+
+    // 4. Handle different webhook events
     switch (eventType) {
       case 'user.created':
-      case 'user.updated':
-        const syncedUser = await syncUserToPrisma(clerkUserId)
-        if (!syncedUser) {
-          throw new Error('Failed to sync user')
+      case 'user.updated': {
+        const user = await userService.syncClerkUserToDatabase(clerkUserId)
+        if (!user) {
+          throw new Error('Failed to sync user data')
         }
-        break
-      
-      case 'user.deleted':
-        await deleteUserFromPrisma(clerkUserId)
-        break
-      
+        return new Response(
+          JSON.stringify({ 
+            message: 'User synchronized successfully',
+            userId: user.id 
+          }),
+          { status: 200 }
+        )
+      }
+
+      case 'user.deleted': {
+        await userService.deleteUserByClerkId(clerkUserId)
+        return new Response(
+          JSON.stringify({ message: 'User deleted successfully' }),
+          { status: 200 }
+        )
+      }
+
       default:
-        console.log('Unhandled event type:', eventType)
-        return Response.json(
-          { message: 'Unhandled event type' },
+        return new Response(
+          JSON.stringify({ message: 'Unhandled event type' }),
           { status: 200 }
         )
     }
-
-    return Response.json(
-      { message: 'Webhook processed successfully' },
-      { status: 200 }
-    )
   } catch (error) {
-    console.error('Webhook processing error:', {
-      message: error?.message || 'Unknown error',
-      eventType,
-      clerkUserId
-    })
-    
-    return Response.json(
-      { error: 'Error processing webhook' },
+    console.error('Webhook processing error:', error)
+    return new Response(
+      JSON.stringify({ 
+        error: 'Internal server error',
+        message: error.message 
+      }),
       { status: 500 }
     )
-  }
-}
-
-async function syncUserToPrisma(clerkUserId) {
-  console.log(`Starting sync for user: ${clerkUserId}`)
-  
-  if (!clerkUserId) {
-    throw new Error('No Clerk User ID provided for sync')
-  }
-
-  try {
-    let clerkUser
-    try {
-      clerkUser = await clerkClient.users.getUser(clerkUserId)
-      console.log('Clerk User Fetched:', {
-        id: clerkUser.id,
-        email: clerkUser.emailAddresses[0]?.emailAddress
-      })
-    } catch (clerkFetchError) {
-      console.error('Failed to fetch Clerk user', {
-        clerkUserId,
-        error: clerkFetchError?.message || 'Unknown error'
-      })
-      throw clerkFetchError
-    }
-
-    if (!clerkUser) {
-      throw new Error(`No Clerk user found for ID: ${clerkUserId}`)
-    }
-
-    const primaryEmailAddress = clerkUser.emailAddresses.find(
-      email => email.id === clerkUser.primaryEmailAddressId
-    )
-
-    if (!primaryEmailAddress?.emailAddress) {
-      throw new Error('User must have a primary email address')
-    }
-
-    // Format address if it exists
-    const address = clerkUser.primaryAddress ? {
-      street: clerkUser.primaryAddress.street1 || null,
-      city: clerkUser.primaryAddress.city || null,
-      state: clerkUser.primaryAddress.state || null,
-      country: clerkUser.primaryAddress.country || null,
-      zipCode: clerkUser.primaryAddress.postalCode || null,
-      pinCode: null // Not available in Clerk
-    } : undefined
-
-    const userData = {
-      clerkUserId: clerkUser.id,
-      email: primaryEmailAddress.emailAddress,
-      firstName: clerkUser.firstName || null,
-      lastName: clerkUser.lastName || null,
-      profilePicture: clerkUser.imageUrl || null,
-      // Only include address if it exists
-      ...(address && { address })
-    }
-
-    const user = await prisma.user.upsert({
-      where: { 
-        clerkUserId 
-      },
-      update: {
-        ...userData,
-        // Only update non-null values
-        firstName: userData.firstName ?? undefined,
-        lastName: userData.lastName ?? undefined,
-        profilePicture: userData.profilePicture ?? undefined,
-        address: address ?? undefined
-      },
-      create: userData,
-      select: {
-        id: true,
-        clerkUserId: true,
-        email: true,
-        firstName: true,
-        lastName: true,
-        profilePicture: true,
-        address: true
-      }
-    })
-
-    console.log('User Sync Completed Successfully', {
-      clerkUserId: user.clerkUserId,
-      email: user.email,
-      prismaId: user.id
-    })
-
-    return user
-  } catch (error) {
-    console.error('User Sync Error', {
-      clerkUserId,
-      error: error?.message || 'Unknown error'
-    })
-    throw error
-  }
-}
-
-async function deleteUserFromPrisma(clerkUserId) {
-  console.log(`Attempting to delete user with Clerk ID: ${clerkUserId}`)
-  
-  if (!clerkUserId) {
-    throw new Error('No Clerk User ID provided for deletion')
-  }
-
-  try {
-    const deletedUser = await prisma.user.delete({
-      where: { clerkUserId }
-    })
-    
-    console.log(`User ${clerkUserId} deleted successfully`, {
-      deletedUser
-    })
-    return deletedUser
-  } catch (error) {
-    console.error(`Error deleting user ${clerkUserId}:`, {
-      error: error?.message || 'Unknown error'
-    })
-    throw error
   }
 }

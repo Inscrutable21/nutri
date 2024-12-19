@@ -1,133 +1,119 @@
+// services/user.service.js
 import { prisma } from '@/lib/prisma'
 import { clerkClient } from '@clerk/nextjs/server'
 
 export const userService = {
   async syncClerkUserToDatabase(clerkUserId) {
-    // Validate input
     if (!clerkUserId) {
-      console.warn('Sync attempted with no Clerk User ID');
-      return null;
+      throw new Error('Clerk User ID is required')
     }
 
     try {
-      // Fetch user from Clerk with more comprehensive details
-      let clerkUser;
-      try {
-        clerkUser = await clerkClient.users.getUser(clerkUserId);
-      } catch (clerkFetchError) {
-        console.error('Failed to fetch Clerk user', {
-          clerkUserId,
-          error: clerkFetchError.message
-        });
-        return null;
-      }
-
-      // Validate Clerk user
+      // 1. Fetch user data from Clerk
+      const clerkUser = await clerkClient.users.getUser(clerkUserId)
       if (!clerkUser) {
-        console.warn(`No Clerk user found for ID: ${clerkUserId}`);
-        return null;
+        throw new Error(`No Clerk user found for ID: ${clerkUserId}`)
       }
 
-      // Prepare user data with defensive programming
+      // 2. Get primary email
+      const primaryEmail = clerkUser.emailAddresses.find(
+        email => email.id === clerkUser.primaryEmailAddressId
+      )?.emailAddress
+
+      if (!primaryEmail) {
+        throw new Error('User must have a primary email address')
+      }
+
+      // 3. Format address if available
+      const address = clerkUser.primaryAddress ? {
+        street: clerkUser.primaryAddress.street1 || null,
+        city: clerkUser.primaryAddress.city || null,
+        state: clerkUser.primaryAddress.state || null,
+        country: clerkUser.primaryAddress.country || null,
+        zipCode: clerkUser.primaryAddress.postalCode || null,
+        pinCode: null // Not provided by Clerk
+      } : null
+
+      // 4. Prepare user data
       const userData = {
         clerkUserId: clerkUser.id,
-        email: clerkUser.emailAddresses[0]?.emailAddress || '',
-        firstName: clerkUser.firstName || '',
-        lastName: clerkUser.lastName || '',
-        profilePicture: clerkUser.imageUrl || '',
-        
-        // Safely extract additional metadata
-        metadata: {
-          phoneNumbers: clerkUser.phoneNumbers?.map(phone => phone.phoneNumber) || [],
-          primaryWeb3Wallet: clerkUser.web3Wallets?.[0]?.web3Wallet || null,
-          verifiedExternalAccounts: clerkUser.externalAccounts?.map(account => ({
-            provider: account.provider,
-            identifier: account.identification?.[0]?.identifier
-          })) || []
-        },
+        email: primaryEmail,
+        firstName: clerkUser.firstName || null,
+        lastName: clerkUser.lastName || null,
+        profilePicture: clerkUser.imageUrl || null,
+        address: address || undefined,
+        updatedAt: new Date()
+      }
 
-        // Optional: Safely extract address details
-        ...(clerkUser.primaryAddress && {
-          address: {
-            street: clerkUser.primaryAddress.street || '',
-            city: clerkUser.primaryAddress.city || '',
-            state: clerkUser.primaryAddress.state || '',
-            country: clerkUser.primaryAddress.country || '',
-            zipCode: clerkUser.primaryAddress.postalCode || '',
-          }
-        })
-      };
-
-      // Upsert user in the database with comprehensive handling
+      // 5. Upsert user in database
       const user = await prisma.user.upsert({
         where: { 
-          clerkUserId: clerkUserId 
+          clerkUserId 
         },
         update: {
           ...userData,
-          // Prevent overwriting with empty values
-          email: userData.email || undefined,
-          firstName: userData.firstName || undefined,
-          lastName: userData.lastName || undefined,
-          profilePicture: userData.profilePicture || undefined,
+          // Only update non-null values
+          firstName: userData.firstName ?? undefined,
+          lastName: userData.lastName ?? undefined,
+          profilePicture: userData.profilePicture ?? undefined,
+          address: address ?? undefined
         },
         create: userData,
-        select: {
-          id: true,
-          clerkUserId: true,
-          email: true,
-          firstName: true,
-          lastName: true,
-          profilePicture: true
+        include: {
+          address: true
         }
-      });
+      })
 
-      console.log('User Sync Completed Successfully', {
-        clerkUserId: user.clerkUserId,
-        email: user.email
-      });
-
-      return user;
+      return user
     } catch (error) {
-      // Comprehensive error logging
-      console.error('User Sync Error', {
+      console.error('User sync failed:', {
         clerkUserId,
-        message: error.message,
-        name: error.name,
+        error: error.message,
         stack: error.stack
-      });
+      })
+      throw error
+    }
+  },
+
+  async deleteUserByClerkId(clerkUserId) {
+    if (!clerkUserId) {
+      throw new Error('Clerk User ID is required')
+    }
+
+    try {
+      // Delete the user and all related data
+      await prisma.user.delete({
+        where: { clerkUserId }
+      })
       
-      // Optionally notify error tracking service
-      // ErrorTrackingService.capture(error)
-      
-      return null;
+      return true
+    } catch (error) {
+      console.error('User deletion failed:', {
+        clerkUserId,
+        error: error.message
+      })
+      throw error
     }
   },
 
   async getUserByClerkId(clerkUserId) {
     if (!clerkUserId) {
-      console.warn('Lookup attempted with no Clerk User ID');
-      return null;
+      throw new Error('Clerk User ID is required')
     }
 
     try {
       return await prisma.user.findUnique({
         where: { clerkUserId },
-        select: {
-          id: true,
-          clerkUserId: true,
-          email: true,
-          firstName: true,
-          lastName: true,
-          profilePicture: true
+        include: {
+          address: true
         }
-      });
+      })
     } catch (error) {
-      console.error('Error fetching user by Clerk ID', {
+      console.error('User fetch failed:', {
         clerkUserId,
-        message: error.message
-      });
-      return null;
+        error: error.message
+      })
+      throw error
     }
   }
-};
+}
