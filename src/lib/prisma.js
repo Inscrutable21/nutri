@@ -1,14 +1,16 @@
+// lib/prisma.js
 import { PrismaClient } from '@prisma/client'
 
-let prisma
-
-try {
-  prisma = new PrismaClient({
+const prismaClientSingleton = () => {
+  return new PrismaClient({
     log: ['query', 'error', 'warn'],
   })
-} catch (error) {
-  console.error('Prisma Client Initialization Error:', error)
-  throw error
 }
+
+const globalForPrisma = globalThis
+
+const prisma = globalForPrisma.prisma ?? prismaClientSingleton()
+
+if (process.env.NODE_ENV !== 'production') globalForPrisma.prisma = prisma
 
 export { prisma }
