@@ -15,37 +15,40 @@ export const userService = {
         throw new Error(`No Clerk user found for ID: ${clerkUserId}`)
       }
 
-      // 2. Get primary email
-      const primaryEmail = clerkUser.emailAddresses.find(
+      // 2. Get primary email with better error handling
+      const primaryEmailObj = clerkUser.emailAddresses.find(
         email => email.id === clerkUser.primaryEmailAddressId
-      )?.emailAddress
-
-      if (!primaryEmail) {
+      )
+      
+      if (!primaryEmailObj?.emailAddress) {
         throw new Error('User must have a primary email address')
       }
 
-      // 3. Format address if available
-      const address = clerkUser.primaryAddress ? {
-        street: clerkUser.primaryAddress.street1 || null,
-        city: clerkUser.primaryAddress.city || null,
-        state: clerkUser.primaryAddress.state || null,
-        country: clerkUser.primaryAddress.country || null,
-        zipCode: clerkUser.primaryAddress.postalCode || null,
-        pinCode: null // Not provided by Clerk
-      } : null
+      // 3. Format address as embedded type
+      let addressData = null
+      if (clerkUser.primaryAddress) {
+        addressData = {
+          street: clerkUser.primaryAddress.street1 || null,
+          city: clerkUser.primaryAddress.city || null,
+          state: clerkUser.primaryAddress.state || null,
+          country: clerkUser.primaryAddress.country || null,
+          zipCode: clerkUser.primaryAddress.postalCode || null,
+          pinCode: null
+        }
+      }
 
-      // 4. Prepare user data
+      // 4. Prepare user data with embedded address
       const userData = {
         clerkUserId: clerkUser.id,
-        email: primaryEmail,
+        email: primaryEmailObj.emailAddress,
         firstName: clerkUser.firstName || null,
         lastName: clerkUser.lastName || null,
         profilePicture: clerkUser.imageUrl || null,
-        address: address || undefined,
+        address: addressData,
         updatedAt: new Date()
       }
 
-      // 5. Upsert user in database
+      // 5. Upsert user with embedded address
       const user = await prisma.user.upsert({
         where: { 
           clerkUserId 
@@ -56,12 +59,9 @@ export const userService = {
           firstName: userData.firstName ?? undefined,
           lastName: userData.lastName ?? undefined,
           profilePicture: userData.profilePicture ?? undefined,
-          address: address ?? undefined
+          address: addressData ?? undefined
         },
-        create: userData,
-        include: {
-          address: true
-        }
+        create: userData
       })
 
       return user
@@ -81,7 +81,7 @@ export const userService = {
     }
 
     try {
-      // Delete the user and all related data
+      // Delete the user (address will be automatically deleted as it's embedded)
       await prisma.user.delete({
         where: { clerkUserId }
       })
@@ -103,10 +103,7 @@ export const userService = {
 
     try {
       return await prisma.user.findUnique({
-        where: { clerkUserId },
-        include: {
-          address: true
-        }
+        where: { clerkUserId }
       })
     } catch (error) {
       console.error('User fetch failed:', {
