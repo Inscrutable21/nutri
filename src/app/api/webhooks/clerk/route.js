@@ -3,104 +3,122 @@ import { Webhook } from 'svix'
 import { headers } from 'next/headers'
 import { userService } from '@/services/user.service'
 
-const webhookSecret = process.env.CLERK_WEBHOOK_SECRET
-
-async function validateRequest(req) {
-  const headersList = headers();
-  const svixHeaders = {
-    'svix-id': headersList.get('svix-id'),
-    'svix-timestamp': headersList.get('svix-timestamp'),
-    'svix-signature': headersList.get('svix-signature'),
-  }
-
-  // Ensure all required headers are present
-  if (!svixHeaders['svix-id'] || !svixHeaders['svix-timestamp'] || !svixHeaders['svix-signature']) {
-    throw new Error('Missing required Svix headers')
-  }
-
-  const payload = await req.text()
-  const webhook = new Webhook(webhookSecret)
-  
-  try {
-    return {
-      // Verify the payload and get the webhook body
-      body: webhook.verify(payload, svixHeaders),
-      // Return the raw payload in case we need it
-      rawPayload: payload
-    }
-  } catch (err) {
-    console.error('Webhook verification failed:', {
-      headers: svixHeaders,
-      error: err.message,
-      // Log partial payload for debugging (be careful with sensitive data)
-      payloadPreview: payload.substring(0, 100)
-    })
-    throw new Error('Invalid webhook signature')
-  }
-}
-
 export async function POST(req) {
+  const WEBHOOK_SECRET = process.env.CLERK_WEBHOOK_SECRET
+
+  if (!WEBHOOK_SECRET) {
+    return Response.json(
+      { 
+        success: false,
+        error: 'Missing webhook secret' 
+      },
+      { status: 500 }
+    )
+  }
+
+  // Get the headers
+  const headersList = headers()
+  const svix_id = headersList.get("svix-id")
+  const svix_timestamp = headersList.get("svix-timestamp")
+  const svix_signature = headersList.get("svix-signature")
+
+  // Debug logging
+  console.log('Received webhook headers:', {
+    'svix-id': svix_id,
+    'svix-timestamp': svix_timestamp,
+    'svix-signature': svix_signature?.substring(0, 20) + '...' // Log partial signature for debugging
+  })
+
+  if (!svix_id || !svix_timestamp || !svix_signature) {
+    return Response.json(
+      { 
+        success: false,
+        error: 'Missing svix headers' 
+      },
+      { status: 400 }
+    )
+  }
+
   try {
-    if (!webhookSecret) {
-      throw new Error('Missing CLERK_WEBHOOK_SECRET environment variable')
-    }
+    // Get the raw body as a string
+    const rawBody = await req.text()
+    
+    // Debug logging
+    console.log('Webhook raw body preview:', rawBody.substring(0, 100))
 
-    const { body } = await validateRequest(req)
-    const { type: eventType, data: eventData } = body
+    // Create Webhook instance with your secret
+    const wh = new Webhook(WEBHOOK_SECRET)
 
-    // Log incoming webhook event
-    console.log('Processing webhook event:', {
-      type: eventType,
-      userId: eventData?.id,
+    // Verify the webhook payload
+    const payload = wh.verify(rawBody, {
+      "svix-id": svix_id,
+      "svix-timestamp": svix_timestamp,
+      "svix-signature": svix_signature,
+    })
+
+    // Parse the verified payload
+    const { type, data } = payload
+    const userId = data?.id
+
+    console.log('Webhook verified successfully:', {
+      type,
+      userId,
       timestamp: new Date().toISOString()
     })
 
-    switch (eventType) {
+    if (!userId) {
+      return Response.json(
+        { 
+          success: false,
+          error: 'Missing user ID in webhook data' 
+        },
+        { status: 400 }
+      )
+    }
+
+    // Handle different webhook events
+    switch (type) {
       case 'user.created':
       case 'user.updated': {
-        const user = await userService.syncClerkUserToDatabase(eventData.id)
+        const user = await userService.syncClerkUserToDatabase(userId)
         return Response.json({ 
-          success: true, 
+          success: true,
           user,
-          event: eventType
+          event: type
         })
       }
 
       case 'user.deleted': {
-        await userService.deleteUserByClerkId(eventData.id)
+        await userService.deleteUserByClerkId(userId)
         return Response.json({ 
           success: true,
-          userId: eventData.id,
-          event: eventType
+          message: 'User deleted successfully',
+          userId,
+          event: type
         })
       }
 
       default: {
-        // Log unhandled event types
-        console.log('Unhandled webhook event type:', eventType)
         return Response.json({ 
           success: true,
-          message: `Unhandled event type: ${eventType}`
+          message: `Unhandled event type: ${type}`
         })
       }
     }
-  } catch (error) {
-    console.error('Webhook handler error:', {
-      message: error.message,
-      stack: error.stack
+  } catch (err) {
+    // Enhanced error logging
+    console.error('Webhook error:', {
+      message: err.message,
+      stack: err.stack,
+      type: err.constructor.name
     })
-
-    // Determine appropriate status code
-    const statusCode = error.message.includes('Missing required Svix headers') || 
-                      error.message.includes('Invalid webhook signature') ? 
-                      400 : 500
 
     return Response.json(
       { 
         success: false,
-        error: error.message 
+        error: 'Invalid webhook signature'
       },
-      { status: statusCode }
+      { status: 400 }
     )
   }
 }
