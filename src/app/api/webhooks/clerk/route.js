@@ -1,151 +1,106 @@
 // src/app/api/webhooks/clerk/route.js
-export const runtime = 'nodejs'
-
 import { Webhook } from 'svix'
 import { headers } from 'next/headers'
-import { prisma } from '@/lib/prisma'
-import { clerkClient } from '@clerk/nextjs/server'
+import { userService } from '@/services/user.service'
 
-const WEBHOOK_SECRET = process.env.CLERK_WEBHOOK_SECRET
+const webhookSecret = process.env.CLERK_WEBHOOK_SECRET
+
+async function validateRequest(req) {
+  const headersList = headers();
+  const svixHeaders = {
+    'svix-id': headersList.get('svix-id'),
+    'svix-timestamp': headersList.get('svix-timestamp'),
+    'svix-signature': headersList.get('svix-signature'),
+  }
+
+  // Ensure all required headers are present
+  if (!svixHeaders['svix-id'] || !svixHeaders['svix-timestamp'] || !svixHeaders['svix-signature']) {
+    throw new Error('Missing required Svix headers')
+  }
+
+  const payload = await req.text()
+  const webhook = new Webhook(webhookSecret)
+  
+  try {
+    return {
+      // Verify the payload and get the webhook body
+      body: webhook.verify(payload, svixHeaders),
+      // Return the raw payload in case we need it
+      rawPayload: payload
+    }
+  } catch (err) {
+    console.error('Webhook verification failed:', {
+      headers: svixHeaders,
+      error: err.message,
+      // Log partial payload for debugging (be careful with sensitive data)
+      payloadPreview: payload.substring(0, 100)
+    })
+    throw new Error('Invalid webhook signature')
+  }
+}
 
 export async function POST(req) {
-  if (!WEBHOOK_SECRET) {
-    console.error('Missing CLERK_WEBHOOK_SECRET environment variable')
-    return Response.json(
-      { error: 'Missing webhook secret' },
-      { status: 500 }
-    )
-  }
-
-  // Get the headers
-  const headerPayload = headers();
-  const svix_id = headerPayload.get("svix-id");
-  const svix_timestamp = headerPayload.get("svix-timestamp");
-  const svix_signature = headerPayload.get("svix-signature");
-
-  if (!svix_id || !svix_timestamp || !svix_signature) {
-    return Response.json(
-      { error: 'Missing svix headers' },
-      { status: 400 }
-    )
-  }
-
   try {
-    const payload = await req.text()
-    const body = JSON.parse(payload)
-
-    // Verify webhook signature
-    const wh = new Webhook(WEBHOOK_SECRET)
-    try {
-      wh.verify(payload, {
-        "svix-id": svix_id,
-        "svix-timestamp": svix_timestamp,
-        "svix-signature": svix_signature,
-      })
-    } catch (err) {
-      console.error('Webhook verification failed:', err)
-      return Response.json(
-        { error: 'Invalid signature' },
-        { status: 400 }
-      )
+    if (!webhookSecret) {
+      throw new Error('Missing CLERK_WEBHOOK_SECRET environment variable')
     }
 
-    const { data: eventData, type: eventType } = body
-    const userId = eventData?.id
+    const { body } = await validateRequest(req)
+    const { type: eventType, data: eventData } = body
 
-    if (!userId) {
-      return Response.json(
-        { error: 'Missing user ID in webhook data' },
-        { status: 400 }
-      )
-    }
+    // Log incoming webhook event
+    console.log('Processing webhook event:', {
+      type: eventType,
+      userId: eventData?.id,
+      timestamp: new Date().toISOString()
+    })
 
     switch (eventType) {
       case 'user.created':
       case 'user.updated': {
-        try {
-          const clerkUser = await clerkClient.users.getUser(userId)
-          if (!clerkUser) {
-            throw new Error(`No Clerk user found for ID: ${userId}`)
-          }
-
-          // Get primary email
-          const primaryEmail = clerkUser.emailAddresses.find(
-            email => email.id === clerkUser.primaryEmailAddressId
-          )?.emailAddress
-
-          if (!primaryEmail) {
-            throw new Error('User has no primary email address')
-          }
-
-          // Extract username from email if needed
-          const username = primaryEmail.split('@')[0]
-
-          // Prepare minimal user data
-          const userData = {
-            clerkUserId: clerkUser.id,
-            email: primaryEmail,
-            firstName: clerkUser.firstName || null,
-            lastName: clerkUser.lastName || null,
-            updatedAt: new Date()
-          }
-
-          // Upsert user with only required fields
-          const user = await prisma.user.upsert({
-            where: { clerkUserId: userId },
-            update: userData,
-            create: userData,
-            // Select only specific fields
-            select: {
-              email: true,
-              firstName: true,
-              lastName: true,
-              clerkUserId: true
-            }
-          })
-
-          return Response.json({ 
-            success: true, 
-            user: {
-              ...user,
-              username // Add derived username if needed
-            }
-          })
-        } catch (error) {
-          console.error('Error processing user webhook:', error)
-          return Response.json(
-            { error: error.message },
-            { status: 500 }
-          )
-        }
+        const user = await userService.syncClerkUserToDatabase(eventData.id)
+        return Response.json({ 
+          success: true, 
+          user,
+          event: eventType
+        })
       }
 
       case 'user.deleted': {
-        try {
-          await prisma.user.delete({
-            where: { clerkUserId: userId }
-          })
-          return Response.json({ 
-            success: true,
-            message: 'User deleted successfully'
-          })
-        } catch (error) {
-          console.error('Error deleting user:', error)
-          return Response.json(
-            { error: error.message },
-            { status: 500 }
-          )
-        }
+        await userService.deleteUserByClerkId(eventData.id)
+        return Response.json({ 
+          success: true,
+          userId: eventData.id,
+          event: eventType
+        })
       }
 
-      default:
-        return Response.json({ success: true })
+      default: {
+        // Log unhandled event types
+        console.log('Unhandled webhook event type:', eventType)
+        return Response.json({ 
+          success: true,
+          message: `Unhandled event type: ${eventType}`
+        })
+      }
     }
   } catch (error) {
-    console.error('Error processing webhook:', error)
+    console.error('Webhook handler error:', {
+      message: error.message,
+      stack: error.stack
+    })
+
+    // Determine appropriate status code
+    const statusCode = error.message.includes('Missing required Svix headers') || 
+                      error.message.includes('Invalid webhook signature') ? 
+                      400 : 500
+
     return Response.json(
-      { error: error.message },
-      { status: 500 }
+      { 
+        success: false,
+        error: error.message 
+      },
+      { status: statusCode }
     )
   }
 }
