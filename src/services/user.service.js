@@ -1,12 +1,6 @@
-import { clerkClient } from '@clerk/nextjs/server'
+// services/user.service.js
+import { auth } from '@clerk/nextjs';
 import { prisma } from '@/lib/prisma'
-
-// Add initialization check
-const initializeClerkClient = () => {
-  if (!process.env.CLERK_SECRET_KEY) {
-    throw new Error('CLERK_SECRET_KEY is not configured')
-  }
-}
 
 export const userService = {
   async syncClerkUserToDatabase(clerkUserId) {
@@ -15,18 +9,60 @@ export const userService = {
     }
 
     try {
-      // Initialize Clerk client first
-      initializeClerkClient()
+      // Get the session and user data
+      const { getUser } = auth();
+      const clerkUser = await getUser(clerkUserId);
       
-      // Rest of your existing code...
-      const clerkUser = await clerkClient.users.getUser(clerkUserId)
-      // ...
+      if (!clerkUser) {
+        throw new Error(`No Clerk user found for ID: ${clerkUserId}`)
+      }
+
+      // Get primary email with better error handling
+      const primaryEmailObj = clerkUser.emailAddresses.find(
+        email => email.id === clerkUser.primaryEmailAddressId
+      )
+      
+      if (!primaryEmailObj?.emailAddress) {
+        throw new Error('User must have a primary email address')
+      }
+
+      // Format address as embedded type
+      let addressData = null
+      if (clerkUser.primaryAddress) {
+        addressData = {
+          street: clerkUser.primaryAddress.street1 || null,
+          city: clerkUser.primaryAddress.city || null,
+          state: clerkUser.primaryAddress.state || null,
+          country: clerkUser.primaryAddress.country || null,
+          zipCode: clerkUser.primaryAddress.postalCode || null,
+          pinCode: null
+        }
+      }
+
+      // Prepare user data
+      const userData = {
+        clerkUserId: clerkUser.id,
+        email: primaryEmailObj.emailAddress,
+        firstName: clerkUser.firstName || null,
+        lastName: clerkUser.lastName || null,
+        profilePicture: clerkUser.imageUrl || null,
+        address: addressData,
+        updatedAt: new Date()
+      }
+
+      // Upsert user
+      const user = await prisma.user.upsert({
+        where: { clerkUserId },
+        update: userData,
+        create: userData
+      })
+
+      return user
     } catch (error) {
       console.error('User sync failed:', {
         clerkUserId,
         error: error.message,
         stack: error.stack,
-        clerkInitialized: !!process.env.CLERK_SECRET_KEY // Add debug info
       })
       throw error
     }
