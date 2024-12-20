@@ -1,9 +1,6 @@
 // services/user.service.js
-import { Clerk } from '@clerk/nextjs/server';
+import { clerkClient } from "@clerk/nextjs";
 import { prisma } from '@/lib/prisma'
-
-// Initialize clerk client with your secret key
-const clerk = Clerk({ secretKey: process.env.CLERK_SECRET_KEY });
 
 export const userService = {
   async syncClerkUserToDatabase(clerkUserId) {
@@ -12,8 +9,8 @@ export const userService = {
     }
 
     try {
-      // Use clerk instead of clerkClient
-      const clerkUser = await clerk.users.getUser(clerkUserId);
+      // Use clerkClient directly
+      const clerkUser = await clerkClient.users.getUser(clerkUserId);
       
       if (!clerkUser) {
         throw new Error(`No Clerk user found for ID: ${clerkUserId}`)
