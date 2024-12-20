@@ -1,5 +1,5 @@
 // services/user.service.js
-import { auth } from '@clerk/nextjs';
+import { clerkClient } from '@clerk/nextjs';
 import { prisma } from '@/lib/prisma'
 
 export const userService = {
@@ -9,9 +9,8 @@ export const userService = {
     }
 
     try {
-      // Get the session and user data
-      const { getUser } = auth();
-      const clerkUser = await getUser(clerkUserId);
+      // Get user data using clerkClient instead of auth
+      const clerkUser = await clerkClient.users.getUser(clerkUserId);
       
       if (!clerkUser) {
         throw new Error(`No Clerk user found for ID: ${clerkUserId}`)
@@ -67,13 +66,14 @@ export const userService = {
       throw error
     }
   },
+  
+  // Rest of the service methods remain the same
   async deleteUserByClerkId(clerkUserId) {
     if (!clerkUserId) {
       throw new Error('Clerk User ID is required')
     }
 
     try {
-      // Delete the user (address will be automatically deleted as it's embedded)
       await prisma.user.delete({
         where: { clerkUserId }
       })
